@@ -1,0 +1,62 @@
+# Distributed Semaphore stack on the NUC.
+# - 2 service replicas behind a Caddy load balancer, published on 127.0.0.1 only (reach it via ssh -L).
+# - Uses the shared Postgres (docsamjho-postgres, database "distsem") and the shared Prometheus.
+name: distsem
+
+x-service: &service
+  image: distsem/semaphore-service:${DISTSEM_TAG:-latest}
+  restart: unless-stopped
+  environment:
+    SPRING_DATASOURCE_URL: jdbc:postgresql://docsamjho-postgres:5432/distsem
+    SPRING_DATASOURCE_USERNAME: distsem
+    SPRING_DATASOURCE_PASSWORD: ${DISTSEM_DB_PASSWORD:?set in .env}
+    SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "10"
+    DISTSEM_SECURITY_API_KEY: ${DISTSEM_API_KEY:-}
+    JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError
+  mem_limit: 768m
+  cpus: 1.5
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8183 && printf 'GET /actuator/health/readiness HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+    interval: 10s
+    timeout: 3s
+    start_period: 40s
+    retries: 3
+  networks:
+    - distsem
+    - docsamjho_default
+    - observability_obs
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+
+services:
+  semaphore-a:
+    <<: *service
+    container_name: distsem-service-a
+    hostname: distsem-service-a
+
+  semaphore-b:
+    <<: *service
+    container_name: distsem-service-b
+    hostname: distsem-service-b
+
+  lb:
+    image: caddy:2.8-alpine
+    container_name: distsem-lb
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "127.0.0.1:8183:8183"
+    depends_on:
+      semaphore-a: { condition: service_healthy }
+      semaphore-b: { condition: service_healthy }
+    networks: [distsem]
+
+networks:
+  distsem:
+    name: distsem
+  docsamjho_default:
+    external: true
+  observability_obs:
+    external: true

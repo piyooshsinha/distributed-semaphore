@@ -1,0 +1,5 @@
+# Appended to /srv/observability/prometheus/prometheus.yml (scrape_configs) by deploy.sh.
+  - job_name: distsem
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['distsem-service-a:8183', 'distsem-service-b:8183']
