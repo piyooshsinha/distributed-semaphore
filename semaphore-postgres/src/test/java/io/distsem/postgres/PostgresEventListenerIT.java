@@ -22,6 +22,7 @@ class PostgresEventListenerIT {
     private final PostgresEventListener listener = new PostgresEventListener(PostgresTestSupport.dataSource());
     private final List<Notification> received = new CopyOnWriteArrayList<>();
     private final AtomicInteger resyncs = new AtomicInteger();
+    private final List<String> nodeChanges = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() {
@@ -30,6 +31,11 @@ class PostgresEventListenerIT {
             @Override
             public void onEvent(Notification notification) {
                 received.add(notification);
+            }
+
+            @Override
+            public void onNodeChange(String nodeId) {
+                nodeChanges.add(nodeId);
             }
 
             @Override
@@ -72,6 +78,18 @@ class PostgresEventListenerIT {
         }
         Thread.sleep(700);
         assertThat(received).extracting(Notification::type).containsExactly(EventType.CREATED, EventType.ACQUIRED);
+    }
+
+    @Test
+    void deliversNodeChanges() throws Exception {
+        try (var c = PostgresTestSupport.dataSource().getConnection(); var s = c.createStatement()) {
+            s.execute("INSERT INTO nodes (node_id, report) VALUES ('node-1', '{}')");
+            s.execute("UPDATE nodes SET last_seen_at = now() WHERE node_id = 'node-1'");
+            s.execute("DELETE FROM nodes WHERE node_id = 'node-1'");
+        }
+        await().atMost(Duration.ofSeconds(5)).until(() -> nodeChanges.size() == 3);
+        assertThat(nodeChanges).containsOnly("node-1");
+        assertThat(received).isEmpty();
     }
 
     @Test

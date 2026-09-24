@@ -1,7 +1,7 @@
-# Build context: semaphore-service/ (only target/semaphore-service.jar is sent, see .dockerignore).
+# Build context: semaphore-service/ (only target/semaphore-service-exec.jar is sent, see .dockerignore).
 FROM eclipse-temurin:25-jre AS layers
 WORKDIR /build
-COPY target/semaphore-service.jar app.jar
+COPY target/semaphore-service-exec.jar app.jar
 RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
 
 FROM eclipse-temurin:25-jre

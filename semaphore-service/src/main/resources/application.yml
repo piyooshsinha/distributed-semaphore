@@ -37,6 +37,10 @@ distsem:
     reap-interval: 1s
     event-retention: 7d
     prune-interval: 1h
+  fleet:
+    offline-after: 5s
+    forget-after: 1h
+    command-ttl: 5m
   security:
     api-key: ""
 

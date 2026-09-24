@@ -2,6 +2,7 @@ package io.distsem.service.ops;
 
 import io.distsem.core.SemaphoreStore;
 import io.distsem.service.config.DistsemProperties;
+import io.distsem.service.fleet.NodeRegistry;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
@@ -21,13 +22,15 @@ class Housekeeping implements SmartLifecycle {
     private static final Logger log = LoggerFactory.getLogger(Housekeeping.class);
 
     private final SemaphoreStore store;
+    private final NodeRegistry nodes;
     private final TaskScheduler scheduler;
     private final DistsemProperties.Housekeeping settings;
     private final List<ScheduledFuture<?>> tasks = new ArrayList<>();
     private volatile boolean running;
 
-    Housekeeping(SemaphoreStore store, TaskScheduler scheduler, DistsemProperties properties) {
+    Housekeeping(SemaphoreStore store, NodeRegistry nodes, TaskScheduler scheduler, DistsemProperties properties) {
         this.store = store;
+        this.nodes = nodes;
         this.scheduler = scheduler;
         this.settings = properties.housekeeping();
     }
@@ -48,6 +51,10 @@ class Housekeeping implements SmartLifecycle {
             int removed = store.pruneEvents(settings.eventRetention());
             if (removed > 0) {
                 log.info("Pruned {} audit events older than {}", removed, settings.eventRetention());
+            }
+            int forgotten = nodes.prune();
+            if (forgotten > 0) {
+                log.info("Forgot {} nodes that stopped reporting", forgotten);
             }
         } catch (RuntimeException e) {
             log.warn("Event pruning failed: {}", e.toString());

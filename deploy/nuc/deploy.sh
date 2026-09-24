@@ -20,9 +20,10 @@ done
 if [ "$SKIP_BUILD" = false ]; then
   echo "==> building jar"
   if [ "$SKIP_TESTS" = true ]; then mvn -B -q package -DskipTests; else mvn -B -q verify; fi
-  echo "==> building image distsem/semaphore-service:$TAG on the NUC"
-  docker --context "$NUC_CONTEXT" build -q \
-    -t "distsem/semaphore-service:$TAG" -t distsem/semaphore-service:latest semaphore-service
+  for image in semaphore-service semaphore-simulator; do
+    echo "==> building image distsem/$image:$TAG on the NUC"
+    docker --context "$NUC_CONTEXT" build -q -t "distsem/$image:$TAG" -t "distsem/$image:latest" "$image"
+  done
 fi
 
 echo "==> syncing stack files to $STACK_DIR"

@@ -16,8 +16,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Receives the {@code distsem_events} notifications published by the schema's event trigger and
- * fans them out to in-process subscribers.
+ * Receives the notifications published by the schema's triggers and fans them out to in-process
+ * subscribers: {@code distsem_events} for committed audit events and {@code distsem_nodes} for
+ * node heartbeats and removals.
  *
  * <p>Notifications sent while the listener is disconnected are lost, so after every (re)connect
  * subscribers get {@link Subscriber#onResync()} and should re-read whatever state they track.
@@ -26,6 +27,7 @@ import org.slf4j.LoggerFactory;
 public final class PostgresEventListener implements AutoCloseable {
 
     public static final String CHANNEL = "distsem_events";
+    public static final String NODES_CHANNEL = "distsem_nodes";
 
     private static final Logger log = LoggerFactory.getLogger(PostgresEventListener.class);
     private static final Duration POLL = Duration.ofMillis(500);
@@ -50,6 +52,10 @@ public final class PostgresEventListener implements AutoCloseable {
 
     public interface Subscriber {
         void onEvent(Notification notification);
+
+        /** A node's heartbeat was stored, or the node was removed. */
+        default void onNodeChange(String nodeId) {
+        }
 
         /** The listener (re)connected; notifications may have been missed. */
         void onResync();
@@ -99,10 +105,11 @@ public final class PostgresEventListener implements AutoCloseable {
                 connection.setAutoCommit(true);
                 try (Statement s = connection.createStatement()) {
                     s.execute("LISTEN " + CHANNEL);
+                    s.execute("LISTEN " + NODES_CHANNEL);
                 }
                 connected = true;
                 backoffMillis = 100;
-                log.info("Listening for semaphore events on channel {}", CHANNEL);
+                log.info("Listening on channels {} and {}", CHANNEL, NODES_CHANNEL);
                 forEachSubscriber(Subscriber::onResync);
                 pump(connection);
             } catch (SQLException | RuntimeException e) {
@@ -126,6 +133,10 @@ public final class PostgresEventListener implements AutoCloseable {
             PGNotification[] notifications = pg.getNotifications((int) POLL.toMillis());
             if (notifications != null) {
                 for (PGNotification n : notifications) {
+                    if (NODES_CHANNEL.equals(n.getName())) {
+                        forEachSubscriber(s -> s.onNodeChange(n.getParameter()));
+                        continue;
+                    }
                     Notification.parse(n.getParameter()).ifPresentOrElse(
                             parsed -> forEachSubscriber(s -> s.onEvent(parsed)),
                             () -> log.warn("Ignoring malformed notification payload '{}'", n.getParameter()));

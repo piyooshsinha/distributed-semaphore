@@ -43,7 +43,7 @@ final class PostgresTestSupport {
 
     static void truncateAll() {
         try (Connection c = dataSource().getConnection(); Statement s = c.createStatement()) {
-            s.execute("TRUNCATE semaphore_events, semaphore_waiters, semaphore_holders, semaphores RESTART IDENTITY");
+            s.execute("TRUNCATE semaphore_events, semaphore_waiters, semaphore_holders, semaphores, nodes, node_commands RESTART IDENTITY");
         } catch (SQLException e) {
             throw new IllegalStateException(e);
         }

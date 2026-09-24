@@ -7,6 +7,8 @@ import io.distsem.core.SemaphoreNotFoundException;
 import io.distsem.core.SemaphoreStore;
 import io.distsem.core.Validation;
 import io.distsem.service.core.ChangeSignals;
+import io.distsem.service.fleet.NodeRegistry;
+import io.distsem.core.fleet.NodeStatus;
 import io.distsem.service.web.ApiModels.EventView;
 import io.distsem.service.web.ApiModels.StateView;
 import java.io.IOException;
@@ -39,6 +41,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
  * <ul>
  *   <li>{@code event: semaphore-event} carries one audit event (the SSE id is the event id);
  *   <li>{@code event: state} carries a fresh snapshot of the semaphore after a batch of events;
+ *   <li>{@code event: nodes} (multiplexed stream only) carries every node's latest report whenever a
+ *       node reports in or goes offline;
  *   <li>comments are sent every 15s as a heartbeat.
  * </ul>
  */
@@ -47,18 +51,22 @@ class EventStreams implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(EventStreams.class);
     private static final Duration HEARTBEAT = Duration.ofSeconds(15);
+    /** How often the multiplexed stream re-checks node liveness when nothing else happens. */
+    private static final Duration NODE_RECHECK = Duration.ofSeconds(2);
     private static final int PAGE = 500;
     private static final int MAX_BACKFILL = 1000;
 
     private final SemaphoreStore store;
     private final ChangeSignals signals;
+    private final NodeRegistry nodes;
     private final Set<Thread> streams = ConcurrentHashMap.newKeySet();
     private final AtomicLong streamIds = new AtomicLong();
     private volatile boolean running;
 
-    EventStreams(SemaphoreStore store, ChangeSignals signals) {
+    EventStreams(SemaphoreStore store, ChangeSignals signals, NodeRegistry nodes) {
         this.store = store;
         this.signals = signals;
+        this.nodes = nodes;
     }
 
     /** One semaphore. Resumes after {@code Last-Event-ID} if given, else sends the last {@code backfill} events. */
@@ -93,7 +101,10 @@ class EventStreams implements SmartLifecycle {
         });
     }
 
-    /** Every semaphore, multiplexed. Sends the last {@code backfill} events of each, then live changes. */
+    /**
+     * Every semaphore and every node, multiplexed. Sends the last {@code backfill} events of each
+     * semaphore and the current nodes, then live changes.
+     */
     @GetMapping(path = "/v1/events/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     SseEmitter allStream(@RequestParam(defaultValue = "20") int backfill) {
         return open(sink -> {
@@ -104,8 +115,18 @@ class EventStreams implements SmartLifecycle {
                 cursors.put(config.name(), backfillCursor(sink, config.name(), backfill));
                 sink.state(config.name());
             }
+            long nodesVersion = signals.nodesVersion();
+            List<NodeStatus> lastNodes = nodes.list();
+            sink.nodes(lastNodes);
             while (sink.open()) {
                 long seenGlobal = signals.globalVersion();
+                long currentNodesVersion = signals.nodesVersion();
+                List<NodeStatus> currentNodes = nodes.list();
+                if (currentNodesVersion != nodesVersion || !onlineSet(currentNodes).equals(onlineSet(lastNodes))) {
+                    nodesVersion = currentNodesVersion;
+                    lastNodes = currentNodes;
+                    sink.nodes(currentNodes);
+                }
                 Set<String> names = new LinkedHashSet<>(cursors.keySet());
                 store.list().forEach(c -> names.add(c.name()));
                 boolean sentAny = false;
@@ -136,10 +157,16 @@ class EventStreams implements SmartLifecycle {
                     }
                 }
                 if (!sentAny) {
-                    sink.idle(() -> signals.awaitAnyChange(seenGlobal, HEARTBEAT));
+                    sink.idle(() -> signals.awaitAnyChange(seenGlobal, NODE_RECHECK));
                 }
             }
         });
+    }
+
+    private static Set<String> onlineSet(List<NodeStatus> statuses) {
+        Set<String> online = new java.util.HashSet<>();
+        statuses.stream().filter(NodeStatus::online).forEach(n -> online.add(n.report().nodeId()));
+        return online;
     }
 
     private long backfillCursor(Sink sink, String name, int backfill) throws IOException {
@@ -219,6 +246,10 @@ class EventStreams implements SmartLifecycle {
             } catch (SemaphoreNotFoundException gone) {
                 // Deleted between the event and the snapshot; the DELETED event says so.
             }
+        }
+
+        void nodes(List<NodeStatus> statuses) throws IOException {
+            send(SseEmitter.event().name("nodes").data(statuses));
         }
 
         /** Waits for a change; sends a heartbeat if nothing was sent for a while. */

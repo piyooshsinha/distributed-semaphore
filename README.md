@@ -44,8 +44,10 @@ Built with Java 25, Spring Boot 4 and PostgreSQL.
 |---|---|
 | `semaphore-core` | Domain model and the `SemaphoreStore` interface. Plain Java, no framework. |
 | `semaphore-postgres` | PostgreSQL store (plain JDBC), Flyway migrations, and the LISTEN/NOTIFY listener. |
-| `semaphore-service` | Spring Boot HTTP API: acquire (waits up to 25s per call), leases, SSE event streams, metrics. |
-| `deploy/nuc` | Docker Compose stack: 2 replicas behind a Caddy load balancer, plus a deploy script. |
+| `semaphore-service` | Spring Boot HTTP API: acquire (waits up to 25s per call), leases, SSE event streams, metrics, node registry. |
+| `semaphore-client` | Java SDK: fails over between replicas, keeps polling while queued, renews leases automatically. |
+| `semaphore-simulator` | Simulated log-processor nodes: workers that contend for a semaphore and take operator commands. |
+| `deploy/nuc` | Docker Compose stack: 2 replicas behind a Caddy load balancer, 3 simulator nodes (8 workers), and a deploy script. |
 
 ## HTTP API
 
@@ -74,6 +76,47 @@ curl -X POST localhost:8183/v1/semaphores/db-flush/acquire -H 'content-type: app
      -d '{"holderId":"worker-7","requestId":"8f1c…","waitTimeoutMs":60000}'
 # {"status":"GRANTED","permit":{"permitId":"…","fencingToken":42,"expiresAt":"…"}}
 ```
+
+## Java SDK
+
+```java
+try (SemaphoreClient client = SemaphoreClient.builder()
+        .endpoints("http://sem-a:8183", "http://sem-b:8183")   // fails over between replicas
+        .build()) {
+    DistributedSemaphore flush = client.semaphore("db-flush");
+    flush.createIfAbsent(5, Duration.ofSeconds(30));
+
+    try (Lease lease = flush.acquire(AcquireOptions.holder("worker-7")
+            .waitUpTo(Duration.ofMinutes(1))
+            .onQueued(position -> log.info("queue position {}", position)))) {
+        writeBatch(batch, lease.fencingToken());   // renewed in the background until closed
+        if (!lease.isValid()) { /* lease lost: discard the result */ }
+    }
+}
+```
+
+- **Retries.** Every call the SDK retries is idempotent on the server. Acquire is keyed by a
+  `requestId`, so resending after a timeout or fail-over returns the same permit or queue position.
+- **Validity.** A lease counts as valid on the client's own monotonic clock, starting from when the
+  grant request was *sent*. Clock skew with the server cannot make it look valid for longer than it is.
+- **Lost leases.** `onLost` fires if the server no longer has the permit, or if renewal fails until
+  the lease runs out.
+
+## Worker nodes and fleet API
+
+The simulator runs `LogProcessorWorker`s. Each one takes a batch of log lines, waits for a permit on
+`log-flush`, flushes the batch while holding the permit, then releases it. Every node sends a
+heartbeat once a second with its workers' states and recent tasks. The heartbeat reply carries any
+operator commands queued for the node, so operators never need to reach nodes directly.
+
+| Method & path | Purpose |
+|---|---|
+| `PUT /v1/nodes/{id}/heartbeat` | Node report in; unacknowledged commands out |
+| `GET /v1/nodes` | All nodes, with an `online` flag, their workers and recent tasks |
+| `POST /v1/nodes/{id}/commands` `{type, args}` | `SCALE_WORKERS{count}`, `PAUSE`, `RESUME`, `CRASH_WORKER{workerId}`, `SET_WORK_DURATION{minMs,maxMs}`, `KILL_NODE` |
+
+`CRASH_WORKER` and `KILL_NODE` abandon permits without releasing them. They show lease expiry
+reclaiming the slot, and fencing tokens moving past the dead holder.
 
 ## Build and run
 
@@ -104,6 +147,6 @@ lease limits, long-poll hold time, cleanup intervals, audit retention, and an op
 
 - [x] Core model and PostgreSQL store, including a concurrency stress test across replicas
 - [x] HTTP service with long-poll, LISTEN/NOTIFY wake-ups, SSE and metrics
-- [ ] Java client SDK (auto-renew, fail-over between replicas) and simulated log-processor worker nodes
+- [x] Java client SDK (auto-renew, fail-over between replicas) and simulated log-processor worker nodes
 - [ ] React dashboard: nodes, workers, permits, queue and a live event timeline
 - [ ] Chaos tests: kill replicas and workers, restart the database

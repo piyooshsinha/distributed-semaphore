@@ -1,5 +1,7 @@
 # Distributed Semaphore stack on the NUC.
 # - 2 service replicas behind a Caddy load balancer, published on 127.0.0.1 only (reach it via ssh -L).
+# - 3 simulated log-processor nodes (8 workers in total) contending for the "log-flush" semaphore.
+#   They talk to both replicas directly, so the client SDK's fail-over is exercised.
 # - Uses the shared Postgres (docsamjho-postgres, database "distsem") and the shared Prometheus.
 name: distsem
 
@@ -29,6 +31,31 @@ x-service: &service
     driver: json-file
     options: { max-size: "20m", max-file: "5" }
 
+x-node-env: &node-env
+  DISTSEM_ENDPOINTS: http://distsem-service-a:8183,http://distsem-service-b:8183
+  DISTSEM_API_KEY: ${DISTSEM_API_KEY:-}
+  SEMAPHORE: log-flush
+  SEMAPHORE_CAPACITY: "3"
+  LEASE_TTL_MS: "5000"
+  WORK_MIN_MS: "800"
+  WORK_MAX_MS: "2500"
+  FAILURE_RATE: "0.03"
+  JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError
+
+x-node: &node
+  image: distsem/semaphore-simulator:${DISTSEM_TAG:-latest}
+  restart: unless-stopped
+  mem_limit: 256m
+  cpus: 0.5
+  stop_grace_period: 15s
+  depends_on:
+    semaphore-a: { condition: service_healthy }
+    semaphore-b: { condition: service_healthy }
+  networks: [distsem]
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
 services:
   semaphore-a:
     <<: *service
@@ -39,6 +66,24 @@ services:
     <<: *service
     container_name: distsem-service-b
     hostname: distsem-service-b
+
+  node-1:
+    <<: *node
+    container_name: distsem-node-1
+    hostname: node-1
+    environment: { <<: *node-env, NODE_ID: node-1, WORKERS: "3" }
+
+  node-2:
+    <<: *node
+    container_name: distsem-node-2
+    hostname: node-2
+    environment: { <<: *node-env, NODE_ID: node-2, WORKERS: "3" }
+
+  node-3:
+    <<: *node
+    container_name: distsem-node-3
+    hostname: node-3
+    environment: { <<: *node-env, NODE_ID: node-3, WORKERS: "2" }
 
   lb:
     image: caddy:2.8-alpine

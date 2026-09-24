@@ -18,6 +18,7 @@ public class ChangeSignals implements PostgresEventListener.Subscriber {
 
     private final ConcurrentHashMap<String, Signal> signals = new ConcurrentHashMap<>();
     private final Signal global = new Signal();
+    private final Signal nodes = new Signal();
 
     public ChangeSignals(PostgresEventListener listener) {
         listener.subscribe(this);
@@ -29,6 +30,11 @@ public class ChangeSignals implements PostgresEventListener.Subscriber {
 
     public long globalVersion() {
         return global.version();
+    }
+
+    /** Changes whenever any node sends a heartbeat or is removed. */
+    public long nodesVersion() {
+        return nodes.version();
     }
 
     /** Blocks until the semaphore's version differs from {@code seen}, or {@code timeout} passes. */
@@ -48,8 +54,15 @@ public class ChangeSignals implements PostgresEventListener.Subscriber {
     }
 
     @Override
+    public void onNodeChange(String nodeId) {
+        nodes.bump();
+        global.bump();
+    }
+
+    @Override
     public void onResync() {
         signals.values().forEach(Signal::bump);
+        nodes.bump();
         global.bump();
     }
 

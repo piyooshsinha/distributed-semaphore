@@ -11,6 +11,7 @@ public record DistsemProperties(
         @DefaultValue Store store,
         @DefaultValue LongPoll longPoll,
         @DefaultValue Housekeeping housekeeping,
+        @DefaultValue Fleet fleet,
         @DefaultValue Security security) {
 
     public DistsemProperties {
@@ -56,6 +57,17 @@ public record DistsemProperties(
             @DefaultValue("1s") Duration reapInterval,
             @DefaultValue("7d") Duration eventRetention,
             @DefaultValue("1h") Duration pruneInterval) {
+    }
+
+    /**
+     * @param offlineAfter  a node that has not sent a heartbeat for this long is shown as offline
+     * @param forgetAfter   nodes silent for this long are removed from the registry
+     * @param commandTtl    undelivered commands older than this are dropped
+     */
+    public record Fleet(
+            @DefaultValue("5s") Duration offlineAfter,
+            @DefaultValue("1h") Duration forgetAfter,
+            @DefaultValue("5m") Duration commandTtl) {
     }
 
     /** @param apiKey when non-blank, every /v1 request must send it in the {@code X-API-Key} header */
