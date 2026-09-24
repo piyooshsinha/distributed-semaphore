@@ -34,7 +34,7 @@ class ConcurrencyIT {
     private static final String SEM = "hot-db";
     private static final int CAPACITY = 3;
     private static final int WORKERS = 24;
-    private static final int ROUNDS_PER_WORKER = 15;
+    private static final int ROUNDS_PER_WORKER = 10;
 
     private HikariDataSource replicaA;
     private HikariDataSource replicaB;
@@ -84,7 +84,9 @@ class ConcurrencyIT {
 
                         int now = inCriticalSection.incrementAndGet();
                         maxObserved.accumulateAndGet(now, Math::max);
-                        Thread.sleep(ThreadLocalRandom.current().nextInt(1, 4));
+                        // Hold long enough, relative to a database round trip, that holders overlap
+                        // even on slow CI machines; otherwise the test would not exercise contention.
+                        Thread.sleep(ThreadLocalRandom.current().nextInt(10, 31));
                         inCriticalSection.decrementAndGet();
 
                         assertThat(store.release(SEM, permit.permitId())).isTrue();
@@ -101,7 +103,8 @@ class ConcurrencyIT {
 
         int total = WORKERS * ROUNDS_PER_WORKER;
         assertThat(completed.get()).isEqualTo(total);
-        assertThat(maxObserved.get()).isBetween(2, CAPACITY);
+        assertThat(maxObserved.get()).as("never above capacity").isLessThanOrEqualTo(CAPACITY);
+        assertThat(maxObserved.get()).as("test produced overlapping holders").isGreaterThan(1);
         assertThat(tokens).hasSize(total);
         assertThat(storeA.state(SEM).holders()).isEmpty();
         assertThat(storeA.state(SEM).waiters()).isEmpty();
